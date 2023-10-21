@@ -1,0 +1,282 @@
+---
+title: "HMM_Test"
+output: html_document
+date: "2023-09-17"
+---
+
+```{r}
+install.packages("depmixS4")
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+oxygenation <- read_csv("data/filtered_oxyall.csv")
+```
+
+```{r}
+oxygenation <- oxygenation %>%
+  mutate(day = str_replace_all(redcap_event_name, c("day" = "", "_arm_1" = "")),
+         day = as.numeric(str_extract(day, "[0-9]+")))
+```
+
+
+
+```{r}
+library(depmixS4)
+```
+
+```{r}
+oxygenation$oxy2 = ifelse(oxygenation$oxy %in% c("IMV", "HFNC", "NIV"), "Invasive", oxygenation$oxy)
+```
+
+```{r}
+oxygenation %>% 
+  mutate(oxygenation_support =
+           ifelse(oxy %in% ))
+```
+
+
+### Wrangling data
+
+```{r}
+# Assuming your data is in a dataframe called df
+
+
+df_dead <- oxygenation %>%
+  filter(! (oxy %in% c("Alive", "Died"))) %>%
+  arrange(icu_id, day) %>%
+  group_by(icu_id) %>%
+  mutate(
+    tstart = day,
+    tstop = lead(day),
+    event = oxy,
+    event2 = oxy2,
+    to_next = lead(oxy),
+    none = ifelse(oxy == "None", 1, 0),
+    SimO2 = ifelse(oxy == "SimO2", 1, 0),
+    HFNC = ifelse(oxy == "HFNC", 1, 0),
+    NIV = ifelse(oxy == "NIV", 1, 0),
+    IMV = ifelse(oxy == "IMV", 1, 0),
+    Alive =  ifelse(oxy == "Alive", 1, 0),
+    Died =  ifelse(oxy == "Died", 1, 0)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(tstop) & !is.na(to_next)) 
+```
+
+### Trying tmerge
+
+#### Time independent variables
+
+```{r}
+time_independent_variables_1 = df_dead %>% 
+      dplyr::select(icu_id, racecat, sexcat, agegrp, bmi_category, adm_quarter, tstop, died) %>% 
+      group_by(icu_id) %>% 
+      summarize(
+        racecat = last(racecat), 
+        died = max(died),
+        sexcat = max(sexcat), 
+        agegrp = max(agegrp), 
+        bmi_category = max(bmi_category), 
+        adm_quarter = max(adm_quarter), 
+        tstop = max(tstop)
+      )
+
+
+library(survival)
+
+df_time_ind <-
+  tmerge(data1=time_independent_variables_1,
+         data2=time_independent_variables_1,
+         id=icu_id,
+         tstop = tstop)
+
+time_dependent_vairables1 = df_dead %>% 
+      dplyr::select(icu_id, oxy, oxy2, day)
+
+
+
+df_final <-
+tmerge(data1=df_time_ind,
+       data2=time_dependent_vairables1,
+       id=icu_id,
+       exposure=tdc(day, oxy))
+
+df_final_2 <-
+tmerge(data1=df_time_ind,
+       data2=time_dependent_vairables1,
+       id=icu_id,
+       exposure=tdc(day, oxy2))
+```
+
+
+```{r}
+df_final$exposure <- factor(df_final$exposure, levels = c("None", "SimO2", "HFNC", "NIV", "IMV"))
+df_final_2$exposure <- factor(df_final_2$exposure, levels = c("None", "SimO2", "Invasive"))
+```
+
+
+### Checking possible states
+
+```{r}
+ck = survcheck(Surv(tstart, tstop, exposure) ~ 1,
+          data = df_final, id = icu_id)
+
+print(ck$transitions)
+print(ck$flag)
+```
+
+
+
+### Making variables the right types
+
+```{r}
+df_final$agegrp = as.factor(df_final$agegrp)
+df_final$bmi_category = as.factor(df_final$bmi_category)
+df_final$sexcat = as.factor(df_final$sexcat)
+df_final$racecat = as.factor(df_final$racecat)
+df_final$died = as.factor(df_final$died)
+```
+
+
+### Removing "Other/Unknown" sex as there are only 25 individuals here
+
+```{r}
+df_final %>% group_by(sexcat) %>% summarize(n())
+```
+
+```{r}
+df_final_v2 = df_final %>% filter(sexcat != "Other/Unknown")
+```
+
+```{r}
+df_final_v2$sexcat = as.factor(df_final_v2$sexcat)
+
+```
+
+### Checking why we should not use adm_quarter (240000) NA-values
+
+```{r}
+df_final %>% group_by(adm_quarter) %>% summarize(n())
+```
+
+```{r}
+summary(fit_race_died_kaplan)
+```
+
+
+
+```{r}
+fit_race_died_kaplan = survfit(Surv(tstart, tstop, exposure) ~ died + racecat + agegrp + bmi_category,
+          data = df_final_v2, id = icu_id)
+
+fit_race_died_kaplan = survfit(Surv(tstart, tstop, exposure) ~ died + racecat,
+          data = df_final_v2, id = icu_id)
+
+sdat_race_died2 = survfit0(fit_race_died_kaplan) %>% broom::tidy()
+
+state_label = c("(s0)" = "None",
+                "HFNC" = "HFNC",
+                "IMV" = "IMV",
+                "NIV" = "NIV", 
+                "SimO2" = "Simple Oxygen")
+
+
+died_label = c("Alive" = "Survived",
+                "Died" = "Died")
+
+
+sdat_race_died2$state <- factor(sdat_race_died2$state, levels = c("(s0)", "SimO2", "HFNC", "NIV", "IMV"))
+
+sdat_race_died3 = sdat_race_died2 %>% 
+    mutate(
+    died = as.factor(str_extract(strata, "(?<=died=)\\w+")),
+    racecat = as.factor(str_extract(strata, "(?<=racecat=)\\w+")))
+
+
+sdat_race_died4 = sdat_race_died3 %>% group_by(racecat, died, state, time) %>% 
+        summarize(
+          std_error = sd(estimate),
+          estimate_mean = mean(estimate)
+        )
+  
+
+g2_new_new = 
+  ggplot(sdat_race_died4,
+         aes(x = time,
+             y = estimate_mean,
+             color = racecat)) +
+  geom_path() +
+  #geom_path(aes(linetype = racecat)) +
+  theme_bw() +
+  #facet_grid(.~state, scales = "free") +
+  facet_grid(died~state, scales = "free", labeller = labeller(state = state_label,
+                                                              died = died_label)) +
+  coord_cartesian(xlim = c(0,14), ylim = c(0,1 )) +
+  scale_color_manual(values = c("#0072B2", "#D55E00", "#ae2012")
+                    ) +
+  theme(
+        strip.text.y.right  = element_text(angle = 0),
+        strip.text = element_text(angle = 0, size = 10, face = "bold", margin = margin(t = 5, b = 5, l = 5, r = 5)),
+        #strip.placement = "outside",        
+        strip.background = element_rect(fill = "white", color = "black", size = 0.5),
+        legend.position = "bottom",
+        axis.title.x = element_text(colour = "black", size = 12),
+        axis.text.x = element_text(size=12, , colour="black"),
+        axis.text.y = element_text(size=12, colour="black", hjust = 0),
+        axis.title.y = element_text(size = 12, margin = margin(r = 2)),
+        legend.text = element_text(size = 12, color = "black")) +
+  labs(
+    x = "Day",
+    y = "Probability in State",
+    color = ""
+  )
+
+
+g3_new = 
+  ggplot(sdat_race_died4,
+         aes(x = time,
+             y = estimate_mean,
+             color = died)) +
+  geom_step() +
+  theme_bw() +
+  facet_grid(racecat~state, scales = "free", labeller = labeller(state = state_label)) +
+  coord_cartesian(xlim = c(0,14), ylim = c(0,1 )) +
+  scale_color_manual(values = c("#0072B2", "#D55E00"),
+                    labels = c("Survived", "Died")
+                    ) +
+  theme(
+        strip.text.y.right  = element_text(angle = 0),
+        strip.text = element_text(angle = 0, size = 10, face = "bold", margin = margin(t = 5, b = 5, l = 5, r = 5)),
+        #strip.placement = "outside",        
+        strip.background = element_rect(fill = "white", color = "black", size = 0.5),
+        legend.position = "bottom",
+        axis.title.x = element_text(colour = "black", size = 12),
+        axis.text.x = element_text(size=12, , colour="black"),
+        axis.text.y = element_text(size=12, colour="black", hjust = 0),
+        axis.title.y = element_text(size = 12, margin = margin(r = 2)),
+        legend.text = element_text(size = 12, color = "black")) +
+  labs(
+    x = "Day",
+    y = "Probability in State",
+    color = ""
+  )
+```
+
+
+```{r}
+df_final_v2$racecat = factor(df_final_v2$racecat,
+                                          levels = c("White", "BlackAA", "Other/Unknown"))
+
+fit_race_died_controls_cox = coxph(Surv(tstart, tstop, exposure) ~ died + racecat + agegrp + bmi_category,
+          data = df_final_v2, id = icu_id)
+
+fit_race_died_controls_cox = coxph(Surv(tstart, tstop, exposure) ~ died : racecat,
+          data = df_final_v2, id = icu_id)
+
+summary(fit_race_died_controls_cox)
+
+```

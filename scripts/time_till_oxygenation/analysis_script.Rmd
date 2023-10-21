@@ -1,0 +1,160 @@
+---
+title: "Survival_analysis_time_to_oxy"
+output: html_document
+date: "2023-10-21"
+---
+
+
+## Packages
+
+```{r}
+library(tidyverse)
+library(survival)
+```
+
+## Data
+
+```{r}
+time2oxycohort <- read_csv("data/time2oxycohort.csv")
+```
+
+## Kaplan meier curves
+
+
+```{r}
+
+time2oxycohort$racecat = factor(time2oxycohort$racecat,
+                                          levels = c("White", "BlackAA", "Other/Unknown"))
+
+# Kaplan-Meier estimator for racecat
+survfit_oxy = survfit(Surv(time2oxy, outcome_oxy) ~ racecat,
+          data = time2oxycohort)
+summary(survfit_oxy)
+```
+
+```{r}
+library(survminer)
+ggsurvplot(survfit_oxy,
+           conf.int = TRUE,
+           #risk.table = TRUE, # Add risk table
+           linetype = "strata", # Change line type by groups
+           ggtheme = theme_bw(), # Change ggplot2 theme
+           palette = c("#E7B800", "#2E9FDF", "#bc6c25")) +
+  labs(y = "Oxygen Probability")
+```
+
+## Cox model
+### For entire cohort
+
+
+```{r}
+time2oxycohort2 = time2oxycohort %>% filter(sexcat != "Other/Unknown")
+```
+
+```{r}
+
+time2oxycohort$agegrp = as.factor(time2oxycohort$agegrp)
+time2oxycohort$bmi_category = as.factor(time2oxycohort$bmi_category)
+time2oxycohort$sexcat = as.factor(time2oxycohort$sexcat)
+time2oxycohort$racecat = as.factor(time2oxycohort$racecat)
+time2oxycohort$died = as.factor(time2oxycohort$died)
+
+fit_race_died_controls_cox = coxph(Surv(time2oxy, outcome_oxy) ~ racecat + agegrp + bmi_category,
+          data = time2oxycohort)
+
+summary(fit_race_died_controls_cox)
+
+```
+
+```{r}
+df_died_all = data.frame(summary(fit_race_died_controls_cox)$coefficient)
+df_died_all$coeffcient = rownames(df_died_all)
+```
+### For Individuals who did not die
+
+
+```{r}
+time2oxycohort$agegrp = as.factor(time2oxycohort$agegrp)
+time2oxycohort$bmi_category = as.factor(time2oxycohort$bmi_category)
+time2oxycohort$sexcat = as.factor(time2oxycohort$sexcat)
+time2oxycohort$racecat = as.factor(time2oxycohort$racecat)
+time2oxycohort$died = as.factor(time2oxycohort$died)
+
+time2oxycohort_died_0 = time2oxycohort %>% filter(died == 0)
+
+fit_race_died_controls_cox_died_0 = coxph(Surv(time2oxy, outcome_oxy) ~ racecat + agegrp + bmi_category,
+          data = time2oxycohort_died_0)
+
+summary(fit_race_died_controls_cox_died_0)
+```
+
+```{r}
+df_died_0 = data.frame(summary(fit_race_died_controls_cox_died_0)$coefficient)
+df_died_0$coeffcient = rownames(df_died_0)
+```
+
+
+### For individuals who died
+
+```{r}
+time2oxycohort_died_1 = time2oxycohort %>% filter(died == 1)
+
+fit_race_died_controls_cox_died_1 = coxph(Surv(time2oxy, outcome_oxy) ~ racecat + agegrp + bmi_category,
+          data = time2oxycohort_died_1)
+
+summary(fit_race_died_controls_cox_died_1)
+```
+
+```{r}
+df_died_1 = data.frame(summary(fit_race_died_controls_cox_died_1)$coefficient)
+df_died_1$coeffcient = rownames(df_died_1)
+```
+## Visualizing model estimates
+
+
+```{r}
+df_died_all$model_name <- "Entire Cohort"
+df_died_0$model_name <- "Individuals Who Survived"
+df_died_1$model_name <- "Individuals Who Died"
+
+control_df <- rbind(df_died_all, df_died_0, df_died_1)
+
+colnames(control_df) <- c("Estimate", "Hazard_Ratio", "SE", "Z", "P_value", "Coefficient", "model_name")
+
+control_df2 = control_df %>% filter(Coefficient %in% c("racecatBlackAA", "racecatOther/Unknown"))
+
+
+ref_groups <- data.frame(
+                         Coefficient = rep("White", 3),
+                         model_name = c("Entire Cohort", "Individuals Who Survived", "Individuals Who Died"),
+                         Hazard_Ratio = rep(1, 3),
+                         SE = rep(0, 3))
+
+
+control_df3 = full_join(control_df2, ref_groups)
+
+```
+
+```{r}
+p1 = ggplot(control_df3, 
+            aes(x = Hazard_Ratio, y = model_name, xmin = Hazard_Ratio - 1.96*SE, xmax = Hazard_Ratio + 1.96*SE, color = Coefficient)) +
+  geom_point(size = 2, shape = 23, position=position_dodge(width=1)) +
+  geom_errorbarh(height = 0.2, position=position_dodge(width=1)) +
+  scale_color_manual(values = c("#bc6c25","#344e41", "#540b0e"),
+                     labels = c("Black", "Other/Unknown", "White (Reference)")) + 
+  geom_vline(xintercept = 1) +
+  labs(title = "",
+       x = "Hazard Ratio",
+       y = "",
+       color = "") +
+  theme_bw() +
+  facet_grid(model_name ~ ., scales = "free", space = "free", switch = "y") +
+  theme(strip.text.y.left = element_blank(),
+        panel.spacing = unit(3, "lines"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        panel.spacing.y = unit(0.2, "cm"),
+        plot.margin = unit(c(0.2, 0.1, 0.2 , 0.2), 'lines'),
+        strip.background = element_rect(fill = "white", color = "black", size = 0.5)) + 
+  scale_x_continuous(limits = c(0.1, 1.1), expand = c(0,0)) 
+```
+
